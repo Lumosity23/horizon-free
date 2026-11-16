@@ -3,9 +3,14 @@ name: game
 # publishes it as the `nightly` release the fork's launcher installs and updates from.
 #
 # The game's folder is the official nightly's (its tools, its compiled exporters, DXC on Windows), with
-# three things of this fork's put in it: the game executable (horizon-client) and horizon-ctl, built here
-# from this repository, and the Tailcat helper (mclink-helper, tailcat-helper/), built here from its Go
-# source. Nothing of Mojang's is in it. The launcher prepares the resources from the player's own Minecraft.
+# three things of this fork's put in it: the game executable (horizon-client) and horizon-ctl, and the
+# Tailcat helper (mclink-helper, tailcat-helper/, built here from its Go source). Nothing of Mojang's is in it.
+# The launcher prepares the resources from the player's own Minecraft.
+#
+# The game is built from the official nightly's own source (its horizon-source.tar.gz) with this
+# fork's Tailcat changes applied (tailcat/apply.py), never from this repository's main: a newer game
+# wants data that the nightly's older horizon-prepare doesn't write, and would stop at its first start with
+# "Missing: re-run horizon-prepare". Same commit for the game, the tools and the exporters.
 #
 # The release is signed with this repository's RELEASE_SIGNING_KEY secret (public key in
 # crates/horizon-release-sign/fork-release-keys.txt), as the launcher checks before it installs.
@@ -45,7 +50,7 @@ env:
 jobs:
   meta:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     outputs:
       date: ${{ steps.meta.outputs.date }}
       sha: ${{ steps.meta.outputs.sha }}
@@ -74,6 +79,29 @@ jobs:
             echo "base_title=$base_title"
           } >> "$GITHUB_OUTPUT"
           echo "::notice::base: $UPSTREAM $BASE_TAG ($base_title)"
+      - name: The official build this one starts from, fetched once for every job
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_TAG: ${{ inputs.base_tag || 'nightly' }}
+        run: |
+          set -euo pipefail
+          mkdir base && cd base
+          gh release download "$BASE_TAG" -R "$UPSTREAM" \
+            -p horizon-linux-x86_64.tar.gz -p horizon-windows-x64.zip \
+            -p horizon-macos-arm64.zip -p horizon-macos-x64.zip -p horizon-source.tar.gz -p SHA256SUMS
+          # Each file is the one the release lists, byte for byte.
+          for f in horizon-linux-x86_64.tar.gz horizon-windows-x64.zip horizon-macos-arm64.zip horizon-macos-x64.zip horizon-source.tar.gz; do
+            grep -E "  $f\$" SHA256SUMS
+          done > listed.sum
+          sha256sum -c listed.sum
+          rm -f listed.sum
+          ls -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: base
+          path: base/*
+          if-no-files-found: error
+          retention-days: 3
 
   build:
     needs: meta
@@ -118,8 +146,6 @@ jobs:
       PROFILE: ${{ inputs.profile || 'fast' }}
       ASSET: ${{ matrix.asset }}
       EXE: ${{ matrix.exe }}
-      GH_TOKEN: ${{ github.token }}
-      BASE_TAG: ${{ inputs.base_tag || 'nightly' }}
     defaults:
       run:
         shell: bash
@@ -127,12 +153,26 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: base
+          path: base-dl
+      - name: Horizon's own source, with Tailcat applied
+        run: |
+          set -euo pipefail
+          T="${RUNNER_TEMP//\\//}"
+          mkdir -p "$T/horizon-src"
+          tar xzf base-dl/horizon-source.tar.gz -C "$T/horizon-src" --strip-components=1
+          PY=$(command -v python3 || command -v python)
+          "$PY" tailcat/apply.py "$T/horizon-src"
+          echo "SRC=$T/horizon-src" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - name: Cross target
         if: matrix.target != ''
         run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
+          workspaces: ${{ runner.temp }}/horizon-src
           shared-key: game-${{ matrix.name }}-${{ inputs.profile || 'fast' }}
       - name: Linux libraries
         if: runner.os == 'Linux'
@@ -141,11 +181,12 @@ jobs:
           sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libasound2-dev libudev-dev pkg-config
 
       - name: Build the game and horizon-ctl
+        working-directory: ${{ runner.temp }}/horizon-src
         run: |
           set -euo pipefail
           cargo build --profile "$PROFILE" --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} \
             -p horizon-official -p horizon-client-lib --bin horizon-official --bin horizon-ctl
-          out="target/${{ matrix.target && format('{0}/', matrix.target) || '' }}$PROFILE"
+          out="$SRC/target/${{ matrix.target && format('{0}/', matrix.target) || '' }}$PROFILE"
           ls -l "$out/horizon-official$EXE" "$out/horizon-ctl$EXE"
           echo "BUILT=$out" >> "$GITHUB_ENV"
 
@@ -169,15 +210,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir base && cd base
-          gh release download "$BASE_TAG" -R "$UPSTREAM" -p "$ASSET" -p SHA256SUMS
-          # The archive is the one the release lists, byte for byte.
-          grep -E "  $ASSET\$" SHA256SUMS > one.sum
-          if command -v sha256sum > /dev/null; then sha256sum -c one.sum; else shasum -a 256 -c one.sum; fi
+          cp "../base-dl/$ASSET" .
           case "$ASSET" in
             *.tar.gz) tar xzf "$ASSET" ;;
             *.zip) if command -v 7z > /dev/null; then 7z x -y "$ASSET" > /dev/null; else unzip -q "$ASSET"; fi ;;
           esac
-          rm -f "$ASSET" SHA256SUMS one.sum
+          rm -f "$ASSET"
           ls
           dir=$(ls -d horizon-*/ | head -1)
           echo "DIR=${dir%/}" >> "$GITHUB_ENV"

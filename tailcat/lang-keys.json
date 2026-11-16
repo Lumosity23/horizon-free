@@ -1,0 +1,16 @@
+{
+  "en_us": {
+    "horizon.multiplayer.connected_friend_tailcat": "Connected to your friend through Tailcat...",
+    "horizon.friends.share_tailcat": "Share with Tailcat",
+    "horizon.friends.tailcat_finding": "Finding a route through Tailcat...",
+    "horizon.friends.tailcat_ready": "Friends join with this invitation through Tailcat. It works through routers and firewalls, with no port to open.",
+    "horizon.friends.tailcat_failed": "Tailcat stopped: %s"
+  },
+  "fr_fr": {
+    "horizon.multiplayer.connected_friend_tailcat": "Connecté à votre ami via Tailcat...",
+    "horizon.friends.share_tailcat": "Partager avec Tailcat",
+    "horizon.friends.tailcat_finding": "Recherche d'une route via Tailcat...",
+    "horizon.friends.tailcat_ready": "Vos amis rejoignent avec cette invitation via Tailcat. Ça passe les routeurs et les pare-feu, sans port à ouvrir.",
+    "horizon.friends.tailcat_failed": "Tailcat s'est arrêté : %s"
+  }
+}

@@ -1,0 +1,949 @@
+diff --git a/crates/horizon-client/src/bin/horizon-ctl/commands.rs b/crates/horizon-client/src/bin/horizon-ctl/commands.rs
+index 3d966e2f..afeb521b 100644
+--- a/crates/horizon-client/src/bin/horizon-ctl/commands.rs
++++ b/crates/horizon-client/src/bin/horizon-ctl/commands.rs
+@@ -552,9 +552,9 @@ pub const COMMANDS: &[Cmd] = &[
+         "PORT 0 or none picks one; commands lets guests use cheats; force forces the game mode. Only when the player asks.",
+         ["horizon-ctl lan open", "horizon-ctl lan status", "horizon-ctl lan close"],
+         &[p("action", Ty::Enum(&["open", "close", "status"]), "what to do"), opt("port", Ty::Int, "port for open"), opt("commands", Ty::Bool, "allow cheats"), opt("force", Ty::Bool, "force the game mode")], mcp: true, local: false),
+-    cmd!("friends", Multiplayer, "friends host|stop|status", "Play with Friends: share the open world behind an invite code, stop, or see who joined",
+-        "status gives the code: share it only when the player asks. Friends join with connect friend:CODE.",
+-        ["horizon-ctl friends host", "horizon-ctl friends status"], &[p("action", Ty::Enum(&["host", "stop", "status"]), "what to do")], mcp: true, local: false),
++    cmd!("friends", Multiplayer, "friends host|tailcat|stop|status", "Play with Friends: share the open world behind an invite code (or through the Tailcat helper), stop, or see who joined",
++        "status gives the code: share it only when the player asks. Friends join with connect friend:CODE; a Tailcat invitation (mcl1_...) joins the same way.",
++        ["horizon-ctl friends host", "horizon-ctl friends tailcat", "horizon-ctl friends status"], &[p("action", Ty::Enum(&["host", "tailcat", "stop", "status"]), "what to do")], mcp: true, local: false),
+     // World
+     cmd!("give", World, "give ITEM [COUNT]", "add items to the inventory", "", ["horizon-ctl give oak_log 16"],
+         &[p("item", Ty::Str, "item id"), opt("count", Ty::Int, "how many (default 1)")], mcp: true, local: false),
+diff --git a/crates/horizon-client/src/game.rs b/crates/horizon-client/src/game.rs
+index f90f481c..3d584cf7 100644
+--- a/crates/horizon-client/src/game.rs
++++ b/crates/horizon-client/src/game.rs
+@@ -2895,6 +2895,9 @@ struct Game<'a> {
+     /// The open world is shared behind an invite code (game/friends.rs).
+     #[cfg(feature = "friends")]
+     friends: Option<friends::Sharing>,
++    /// The open world is shared through a Tailcat helper instead (game/friends.rs).
++    #[cfg(feature = "friends")]
++    tailcat_share: Option<friends::TailcatSharing>,
+     /// The Social Interactions screen and the players whose chat is hidden (game/social.rs).
+     social: social::Social,
+     world_options: Option<lan_screen::WorldOptions>,
+@@ -11797,6 +11800,8 @@ impl<'a> Game<'a> {
+             game_tests: game_tests::GameTests::default(),
+             #[cfg(feature = "friends")]
+             friends: None,
++            #[cfg(feature = "friends")]
++            tailcat_share: None,
+             social: Default::default(),
+             debug_keys: Default::default(),
+             debug_charts: Default::default(),
+diff --git a/crates/horizon-client/src/game/friends.rs b/crates/horizon-client/src/game/friends.rs
+index 8b15ca9e..34950575 100644
+--- a/crates/horizon-client/src/game/friends.rs
++++ b/crates/horizon-client/src/game/friends.rs
+@@ -9,7 +9,9 @@
+ //! horizon-official.
+ use super::{Game, lan::LanSettings};
+ use horizon_client::{Result, hud::HudBatch, lang, text::Text};
+-use horizon_friends::{Host, HostConfig, HostEvent, PathMode, host::DEFAULT_PORT, reach, stun};
++use horizon_friends::{
++    Host, HostConfig, HostEvent, PathMode, host::DEFAULT_PORT, reach, stun, tailcat::Helper,
++};
+ use horizon_protocol::{GAME_VERSION, PROTOCOL_VERSION};
+ use std::time::{Duration, Instant};
+ 
+@@ -31,8 +33,20 @@ pub(super) struct Sharing {
+     paths: (u32, u32),
+ }
+ 
++/// The open world shared through a Tailcat helper (horizon-friends' `tailcat`): the helper carries
++/// the guests' sessions to the world's LAN port. One kind of sharing at a time.
++pub(super) struct TailcatSharing {
++    helper: Helper,
++    /// Sharing opened the world to LAN, so stopping closes it again.
++    opened_lan: bool,
++    /// The `mcl1_...` invitation, once the helper has found its route.
++    invite: Option<String>,
++    copied: Option<Instant>,
++}
++
+ pub const HELP: &[&str] = &[
+     "friends host                   share the open world behind an invite code",
++    "friends tailcat                share the open world through the Tailcat helper",
+     "friends stop                   stop sharing",
+     "friends status                 the code, how friends reach this host, the guests",
+ ];
+@@ -54,11 +68,9 @@ fn env_flag(name: &str, default: bool) -> bool {
+ }
+ 
+ impl Game<'_> {
+-    /// Start sharing the open world.
+-    pub(super) fn friends_start(&mut self) -> Result<()> {
+-        if self.friends.is_some() {
+-            return Ok(());
+-        }
++    /// The LAN port of the world to share, opening the world to LAN if it isn't (with Open to
++    /// LAN's defaults); whether sharing opened it, so stopping closes it again.
++    fn friends_world_port(&mut self) -> Result<(bool, u16)> {
+         // Single player on its server thread shares that server, as Open to
+         // LAN publishes it; another server can't be shared.
+         if self.title.is_some() || (self.remote.is_some() && self.integrated.is_none()) {
+@@ -74,6 +86,15 @@ impl Game<'_> {
+             })?;
+         }
+         let port = self.lan_port().ok_or("the world isn't open to LAN")?;
++        Ok((opened_lan, port))
++    }
++
++    /// Start sharing the open world.
++    pub(super) fn friends_start(&mut self) -> Result<()> {
++        if self.friends.is_some() || self.tailcat_share.is_some() {
++            return Ok(());
++        }
++        let (opened_lan, port) = self.friends_world_port()?;
+         let host = match Host::start(HostConfig {
+             lan: std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+             protocol: PROTOCOL_VERSION,
+@@ -112,9 +133,91 @@ impl Game<'_> {
+         Ok(())
+     }
+ 
++    /// Start sharing the open world through the Tailcat helper: its invitation arrives once the
++    /// helper has found a route (`tick_friends`).
++    pub(super) fn friends_start_tailcat(&mut self) -> Result<()> {
++        if self.friends.is_some() || self.tailcat_share.is_some() {
++            return Ok(());
++        }
++        let (opened_lan, port) = self.friends_world_port()?;
++        match Helper::host(std::net::SocketAddr::from(([127, 0, 0, 1], port))) {
++            Ok(helper) => {
++                self.tailcat_share = Some(TailcatSharing {
++                    helper,
++                    opened_lan,
++                    invite: None,
++                    copied: None,
++                });
++                Ok(())
++            }
++            Err(e) => {
++                if opened_lan {
++                    self.lan_close(true);
++                }
++                Err(e.into())
++            }
++        }
++    }
++
++    /// The helper is gone or stopped sharing: its invitation ends, and the world closes to LAN
++    /// again if sharing opened it.
++    fn tailcat_stop(&mut self) {
++        let Some(mut share) = self.tailcat_share.take() else {
++            return;
++        };
++        share.helper.stop();
++        if share.opened_lan {
++            self.lan_close(true);
++        }
++    }
++
++    /// The helper's events, once a tick: its invitation, or why it stopped.
++    fn tick_tailcat(&mut self) {
++        let Some(share) = self.tailcat_share.as_mut() else {
++            return;
++        };
++        let mut announce = false;
++        for event in share.helper.poll() {
++            if event.kind == "ready" && !event.invite.is_empty() && share.invite.is_none() {
++                share.invite = Some(event.invite);
++                announce = true;
++            }
++        }
++        let failed = share.helper.stopped.then(|| {
++            share
++                .helper
++                .error
++                .clone()
++                .unwrap_or_else(|| "the helper stopped".to_owned())
++        });
++        if let Some(reason) = failed {
++            self.tailcat_stop();
++            self.system_message(Text::literal(
++                lang::get_or("horizon.friends.tailcat_failed", "Tailcat stopped: %s")
++                    .replacen("%s", &reason, 1),
++            ));
++        } else if announce {
++            self.system_message(Text::literal(lang::get_or(
++                "horizon.friends.code_ready",
++                "Your invite code is ready: Game Menu, Play with Friends. Copy it and send it to your friends.",
++            )));
++        }
++    }
++
+     /// Stop sharing: the code ends (direct port closed, router mapping
+     /// deleted); the world closes to LAN again if sharing opened it.
+     pub(super) fn friends_stop(&mut self) {
++        if let Some(opened_lan) = self.tailcat_share.as_ref().map(|t| t.opened_lan) {
++            self.tailcat_stop();
++            // Closing the LAN says so itself.
++            if !opened_lan {
++                self.system_message(Text::literal(lang::get_or(
++                    "horizon.friends.stopped",
++                    "Stopped sharing the invite code.",
++                )));
++            }
++            return;
++        }
+         let Some(mut sharing) = self.friends.take() else {
+             return;
+         };
+@@ -134,10 +237,15 @@ impl Game<'_> {
+         if let Some(mut sharing) = self.friends.take() {
+             sharing.host.stop();
+         }
++        // The LAN server is already closing: the helper just ends.
++        if let Some(mut share) = self.tailcat_share.take() {
++            share.helper.stop();
++        }
+     }
+ 
+     /// New codes and sessions, once a tick and while the pause menu is drawn.
+     pub(super) fn tick_friends(&mut self) {
++        self.tick_tailcat();
+         let Some(sharing) = self.friends.as_mut() else {
+             return;
+         };
+@@ -188,7 +296,12 @@ impl Game<'_> {
+     }
+ 
+     pub(super) fn friends_copy(&mut self) {
+-        let Some(code) = self.friends.as_ref().and_then(|s| s.code.clone()) else {
++        let code = match (&self.friends, &self.tailcat_share) {
++            (Some(s), _) => s.code.clone(),
++            (None, Some(t)) => t.invite.clone(),
++            (None, None) => None,
++        };
++        let Some(code) = code else {
+             return;
+         };
+         use horizon_client::clipboard::Clipboard;
+@@ -196,6 +309,19 @@ impl Game<'_> {
+         if let Some(s) = self.friends.as_mut() {
+             s.copied = Some(Instant::now());
+         }
++        if let Some(t) = self.tailcat_share.as_mut() {
++            t.copied = Some(Instant::now());
++        }
++    }
++
++    fn friends_share_failed(&mut self, e: &dyn std::fmt::Display) {
++        self.system_message(Text::literal(
++            lang::get_or(
++                "horizon.friends.share_failed",
++                "Couldn't share the world: %s",
++            )
++            .replacen("%s", &e.to_string(), 1),
++        ));
+     }
+ 
+     /// Play with Friends. The world is paused under it in singleplayer, so
+@@ -219,13 +345,12 @@ impl Game<'_> {
+         match action {
+             Action::Share => {
+                 if let Err(e) = self.friends_start() {
+-                    self.system_message(Text::literal(
+-                        lang::get_or(
+-                            "horizon.friends.share_failed",
+-                            "Couldn't share the world: %s",
+-                        )
+-                        .replacen("%s", &e.to_string(), 1),
+-                    ));
++                    self.friends_share_failed(&e);
++                }
++            }
++            Action::ShareTailcat => {
++                if let Err(e) = self.friends_start_tailcat() {
++                    self.friends_share_failed(&e);
+                 }
+             }
+             Action::Copy => self.friends_copy(),
+@@ -258,6 +383,32 @@ impl Game<'_> {
+             }
+             None => Vec::new(),
+         };
++        if let Some(t) = &self.tailcat_share {
++            return FriendsView {
++                shown: true,
++                sharing: true,
++                code: t.invite.clone(),
++                status: if t.invite.is_none() {
++                    lang::get_or(
++                        "horizon.friends.tailcat_finding",
++                        "Finding a route through Tailcat...",
++                    )
++                } else {
++                    lang::get_or(
++                        "horizon.friends.tailcat_ready",
++                        "Friends join with this invitation through Tailcat. It works through routers and firewalls, with no port to open.",
++                    )
++                },
++                // Tailscale's relays carry it when nothing direct does.
++                reachable: true,
++                help: None,
++                guests,
++                notice: None,
++                copied: t
++                    .copied
++                    .is_some_and(|c| c.elapsed() < Duration::from_secs(2)),
++            };
++        }
+         let Some(s) = &self.friends else {
+             return FriendsView {
+                 shown: self.remote.is_none() || self.integrated.is_some(),
+@@ -310,6 +461,10 @@ impl Game<'_> {
+                 self.friends_start()?;
+                 Ok(Some(json!({ "ok": true, "lan_port": self.lan_port() })))
+             }
++            Some("tailcat") => {
++                self.friends_start_tailcat()?;
++                Ok(Some(json!({ "ok": true, "lan_port": self.lan_port() })))
++            }
+             Some("stop") => {
+                 self.friends_stop();
+                 Ok(Some(json!({ "ok": true })))
+@@ -330,10 +485,12 @@ impl Game<'_> {
+                     "direct": self.friends.as_ref().map_or(0, |s| s.paths.0),
+                     "relayed": self.friends.as_ref().map_or(0, |s| s.paths.1),
+                     "guests": view.guests,
++                    "tailcat": self.tailcat_share.is_some(),
++                    "tailcat_invite": self.tailcat_share.as_ref().and_then(|t| t.invite.clone()),
+                     "lan_port": self.lan_port(),
+                 })))
+             }
+-            _ => Err("friends host|stop|status".into()),
++            _ => Err("friends host|tailcat|stop|status".into()),
+         }
+     }
+ }
+diff --git a/crates/horizon-client/src/game/friends/screen.rs b/crates/horizon-client/src/game/friends/screen.rs
+index 965f443a..e3e9eacd 100644
+--- a/crates/horizon-client/src/game/friends/screen.rs
++++ b/crates/horizon-client/src/game/friends/screen.rs
+@@ -45,6 +45,8 @@ pub struct FriendsView {
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum Action {
+     Share,
++    /// Share through the Tailcat helper instead.
++    ShareTailcat,
+     Copy,
+     Stop,
+     /// Open the troubleshooting page.
+@@ -172,6 +174,14 @@ fn layout(
+             action: Action::Share,
+             active: view.shown,
+         });
++        buttons.push(Button {
++            x: cx - 100.0,
++            y: y + 32.0,
++            w: 200.0,
++            label: tr("horizon.friends.share_tailcat", "Share with Tailcat"),
++            action: Action::ShareTailcat,
++            active: view.shown,
++        });
+     }
+     // HeaderAndFooterLayout's footer: Done, beside Troubleshooting when
+     // friends on the internet can't reach the host.
+@@ -204,7 +214,8 @@ fn layout(
+     }
+     (lines, buttons)
+ }
+-/// The code's groups packed into lines of at most `width`.
++/// The code's groups packed into lines of at most `width`. A group wider than a line (a Tailcat
++/// invitation is one long run of characters) is cut where the line ends.
+ fn code_lines(atlas: &HudAtlas, code: &str, width: f32) -> Vec<String> {
+     let mut lines: Vec<String> = Vec::new();
+     for group in code.split('-') {
+@@ -213,6 +224,18 @@ fn code_lines(atlas: &HudAtlas, code: &str, width: f32) -> Vec<String> {
+                 l.push('-');
+                 l.push_str(group);
+             }
++            _ if HudBatch::text_width(atlas, group) > width => {
++                let mut line = String::new();
++                for c in group.chars() {
++                    line.push(c);
++                    if HudBatch::text_width(atlas, &line) > width {
++                        line.pop();
++                        lines.push(std::mem::take(&mut line));
++                        line.push(c);
++                    }
++                }
++                lines.push(line);
++            }
+             _ => lines.push(group.to_owned()),
+         }
+     }
+@@ -329,6 +352,52 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn tailcat_is_offered_beside_start_sharing_and_its_long_invitation_fits() {
++        let atlas = atlas();
++        let size = (427.0, 240.0);
++        let idle = FriendsView {
++            shown: true,
++            ..FriendsView::default()
++        };
++        let (_, buttons) = layout(&atlas, size, &idle);
++        let tailcat = buttons
++            .iter()
++            .find(|b| b.action == Action::ShareTailcat)
++            .unwrap();
++        assert!(tailcat.active);
++        assert!(tailcat.y + 20.0 <= size.1 - 27.0, "above the footer");
++        assert_eq!(
++            click(&atlas, size, (tailcat.x + 1.0, tailcat.y + 1.0), &idle),
++            Some(Action::ShareTailcat)
++        );
++
++        // An invitation is one run of characters with no dash to break at.
++        let invite = format!("mcl1_{}", "eyJ2ZXJzaW9uIjoxLCJ0YWlsY2F0Ijoi".repeat(4));
++        let sharing = FriendsView {
++            shown: true,
++            sharing: true,
++            code: Some(invite.clone()),
++            status: "Friends join through Tailcat.".into(),
++            reachable: true,
++            ..FriendsView::default()
++        };
++        let (lines, buttons) = layout(&atlas, size, &sharing);
++        let width = (size.0 - 40.0).min(310.0);
++        let shown: String = lines
++            .iter()
++            // The sentences have spaces; the invitation's lines have none.
++            .filter(|(text, _, _)| !text.contains(' '))
++            .map(|(text, _, _)| text.as_str())
++            .collect();
++        assert_eq!(shown, invite, "every character of the invitation is drawn");
++        for (text, _, y) in &lines {
++            assert!(HudBatch::text_width(&atlas, text) <= width, "{text} fits");
++            assert!(y + 9.0 <= size.1 - 27.0, "the text stays above the footer");
++        }
++        assert!(buttons.iter().any(|b| b.action == Action::Copy && b.active));
++    }
++
+     #[test]
+     fn a_server_offers_no_sharing() {
+         let atlas = atlas();
+diff --git a/crates/horizon-client/src/net.rs b/crates/horizon-client/src/net.rs
+index d091ffcf..4ed5b475 100644
+--- a/crates/horizon-client/src/net.rs
++++ b/crates/horizon-client/src/net.rs
+@@ -590,6 +590,7 @@ fn join_friend(
+             tunnel::Progress::Connected { direct: false } => {
+                 "horizon.multiplayer.connected_friend_relay"
+             }
++            tunnel::Progress::Tailcat => "horizon.multiplayer.connected_friend_tailcat",
+         };
+         status(send, &tr(lang, key));
+     };
+diff --git a/crates/horizon-friends/src/game.rs b/crates/horizon-friends/src/game.rs
+index 6991297d..da60d4f0 100644
+--- a/crates/horizon-friends/src/game.rs
++++ b/crates/horizon-friends/src/game.rs
+@@ -6,6 +6,7 @@ use crate::{
+     PathMode,
+     guest::{self, GuestConfig},
+     invite::{Parsed, parse},
++    tailcat::{self, Helper},
+ };
+ use horizon_platform::{
+     hooks::{
+@@ -14,7 +15,7 @@ use horizon_platform::{
+     },
+     version::{PROTOCOL_VERSION, VANILLA_VERSION},
+ };
+-use std::net::SocketAddr;
++use std::{net::SocketAddr, sync::Mutex};
+ 
+ /// What `horizon-official` registers: Play with Friends' hooks.
+ pub static HOOKS: Friends = Friends;
+@@ -29,8 +30,38 @@ impl Hooks for Friends {
+ 
+ struct Invites;
+ 
++/// The helper of the Tailcat world this game joined: it carries the session, so it lives until
++/// the next join (which replaces it) or the game ends (its input closes with the process).
++static TAILCAT_GUEST: Mutex<Option<Helper>> = Mutex::new(None);
++
++/// Join a Tailcat invitation: start the helper and give the loopback port it listens on.
++fn open_tailcat(invite: &str, progress: &mut dyn FnMut(Progress)) -> Result<Opened, String> {
++    progress(Progress::Finding);
++    // The previous join's helper ends first: one world at a time.
++    drop(TAILCAT_GUEST.lock().map_err(|e| e.to_string())?.take());
++    let mut helper = Helper::join(invite)?;
++    let ready = helper.wait_ready(tailcat::READY_TIMEOUT)?;
++    let port = ready
++        .address
++        .parse::<SocketAddr>()
++        .ok()
++        .filter(|a| a.ip().is_loopback())
++        .map(|a| a.port())
++        .ok_or("the Tailcat helper gave no loopback address")?;
++    progress(Progress::Tailcat);
++    *TAILCAT_GUEST.lock().map_err(|e| e.to_string())? = Some(helper);
++    // The helper's port is its own: no token is sent on it.
++    Ok(Opened {
++        port,
++        token: Vec::new(),
++    })
++}
++
+ impl Resolver for Invites {
+     fn is_code(&self, code: &str, full: bool) -> bool {
++        if tailcat::is_invite(code) {
++            return true;
++        }
+         match parse(code) {
+             Some(Parsed::Long(_)) => true,
+             Some(Parsed::Short(_)) => !full,
+@@ -39,6 +70,9 @@ impl Resolver for Invites {
+     }
+ 
+     fn nameplate(&self, code: &str) -> Option<String> {
++        if tailcat::is_invite(code) {
++            return None;
++        }
+         match parse(code) {
+             Some(Parsed::Short(c)) => Some(c.nameplate),
+             _ => None,
+@@ -48,6 +82,9 @@ impl Resolver for Invites {
+     /// The relay is kept beside the addresses: two hosts on other networks can
+     /// share a private address and the fixed direct port.
+     fn public_part(&self, code: &str) -> String {
++        if tailcat::is_invite(code) {
++            return tailcat::public_part(code);
++        }
+         match parse(code) {
+             Some(Parsed::Short(code)) => code.nameplate,
+             Some(Parsed::Long(invite)) => {
+@@ -71,6 +108,9 @@ impl Resolver for Invites {
+         relay: Option<String>,
+         progress: &mut dyn FnMut(Progress),
+     ) -> Result<Opened, String> {
++        if tailcat::is_invite(code) {
++            return open_tailcat(code, progress);
++        }
+         progress(Progress::Finding);
+         let tunnel = guest::join(&GuestConfig {
+             code: code.to_owned(),
+diff --git a/crates/horizon-friends/src/lib.rs b/crates/horizon-friends/src/lib.rs
+index aefa238b..2b3a3451 100644
+--- a/crates/horizon-friends/src/lib.rs
++++ b/crates/horizon-friends/src/lib.rs
+@@ -20,6 +20,7 @@ pub mod portmap;
+ pub mod reach;
+ mod session;
+ pub mod stun;
++pub mod tailcat;
+ pub mod wire;
+ 
+ pub use code::Code;
+@@ -39,6 +40,12 @@ use std::{
+ /// starts).
+ pub const ADDRESS_PREFIX: &str = "friend:";
+ 
++/// Whether Join a Friend can join `code`: an invite code, or a Tailcat invitation (`tailcat`).
++/// The launcher's Play page checks what the player pasted with it before starting the game.
++pub fn can_join(code: &str) -> bool {
++    invite::parse(code).is_some() || tailcat::is_invite(code)
++}
++
+ /// Fill `buf` from the OS random generator.
+ pub(crate) fn fill_random(buf: &mut [u8]) -> io::Result<()> {
+     getrandom::fill(buf).map_err(|e| io::Error::other(e.to_string()))
+diff --git a/crates/horizon-friends/src/tailcat.rs b/crates/horizon-friends/src/tailcat.rs
+new file mode 100644
+index 00000000..93637e3b
+--- /dev/null
++++ b/crates/horizon-friends/src/tailcat.rs
+@@ -0,0 +1,365 @@
++//! Tailcat tunnels: a second way to share a world, beside the invite codes of `code`/`invite`.
++//!
++//! [Tailcat for Minecraft](https://github.com/tailscale/tailcat-for-minecraft)'s helper
++//! (`mclink-helper`, written in Go because Tailscale's userspace WireGuard, NAT traversal and DERP
++//! relays are) carries the game's TCP stream between two loopback ports, as this crate's own tunnel
++//! does. The game starts it as a child process and talks to it in lines of JSON on its standard
++//! output; closing its standard input ends it.
++//!
++//! - Hosting: `mclink-helper host --target 127.0.0.1:<LAN port>` answers `ready` with an `mcl1_...`
++//!   invitation.
++//! - Joining: `mclink-helper join --invite mcl1_...` answers `ready` with a loopback `address` that
++//!   forwards to the host's world.
++//!
++//! Nothing here depends on the helper's internals beyond that protocol. The helper is not shipped
++//! with the game: see [`find_helper`] for where it is looked for.
++use serde::Deserialize;
++use sha2::{Digest, Sha256};
++use std::{
++    io::{BufRead, BufReader},
++    net::SocketAddr,
++    path::PathBuf,
++    process::{Child, ChildStdin, Command, Stdio},
++    sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, channel},
++    time::{Duration, Instant},
++};
++
++/// What a Tailcat invitation starts with.
++pub const INVITE_PREFIX: &str = "mcl1_";
++/// The environment variable naming the helper's executable.
++pub const HELPER_ENV: &str = "HORIZON_TAILCAT_HELPER";
++/// How long a join waits for the helper to be ready (it finds a DERP region first).
++pub const READY_TIMEOUT: Duration = Duration::from_secs(30);
++/// A bound on an invitation's length: a real one is a few hundred characters.
++const MAX_INVITE: usize = 4096;
++
++/// Whether `code` is a Tailcat invitation. Only its shape is checked; the helper reads it.
++pub fn is_invite(code: &str) -> bool {
++    let code = code.trim();
++    code.len() <= MAX_INVITE
++        && code.strip_prefix(INVITE_PREFIX).is_some_and(|rest| {
++            !rest.is_empty()
++                && rest
++                    .bytes()
++                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
++        })
++}
++
++/// What tells one shared world from another, without the invitation: the first bytes of its hash.
++/// (Native mods key a server's data by it, and an invitation is all a guest needs to join.)
++pub fn public_part(code: &str) -> String {
++    let digest = Sha256::digest(code.trim().as_bytes());
++    let hex: String = digest[..6].iter().map(|b| format!("{b:02x}")).collect();
++    format!("tailcat-{hex}")
++}
++
++/// A line the helper wrote.
++#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
++pub struct Event {
++    #[serde(rename = "type", default)]
++    pub kind: String,
++    #[serde(default)]
++    pub mode: String,
++    /// `ready` in host mode: the invitation to give friends.
++    #[serde(default)]
++    pub invite: String,
++    /// `ready` in join mode: the loopback address the game connects to.
++    #[serde(default)]
++    pub address: String,
++    /// `error`: a short machine name (`derp_unreachable`, `invalid_invite`...).
++    #[serde(default)]
++    pub code: String,
++    #[serde(default)]
++    pub message: String,
++}
++
++impl Event {
++    /// A line of the helper's output; None for anything that isn't an event.
++    pub fn parse(line: &str) -> Option<Event> {
++        serde_json::from_str::<Event>(line.trim())
++            .ok()
++            .filter(|e| !e.kind.is_empty())
++    }
++}
++
++/// Where the helper is: `HORIZON_TAILCAT_HELPER`, else `mclink-helper` beside the game's
++/// executable, else in a `tailcat` folder of the game folder.
++pub fn find_helper() -> Result<PathBuf, String> {
++    let name = if cfg!(windows) {
++        "mclink-helper.exe"
++    } else {
++        "mclink-helper"
++    };
++    if let Some(path) = std::env::var_os(HELPER_ENV).filter(|p| !p.is_empty()) {
++        let path = PathBuf::from(path);
++        return if path.is_file() {
++            Ok(path)
++        } else {
++            Err(format!(
++                "{HELPER_ENV} names {}, which isn't a file",
++                path.display()
++            ))
++        };
++    }
++    let beside_exe = std::env::current_exe()
++        .ok()
++        .and_then(|exe| exe.parent().map(|dir| dir.join(name)));
++    let in_game_folder = std::env::current_dir()
++        .ok()
++        .map(|dir| dir.join("tailcat").join(name));
++    beside_exe
++        .into_iter()
++        .chain(in_game_folder)
++        .find(|p| p.is_file())
++        .ok_or_else(|| {
++            format!("the Tailcat helper ({name}) wasn't found: set {HELPER_ENV} or put it beside the game")
++        })
++}
++
++/// A running helper. Dropping it ends it.
++pub struct Helper {
++    child: Child,
++    /// Held open: the helper stops when its standard input closes.
++    stdin: Option<ChildStdin>,
++    events: Receiver<Event>,
++    /// The last error the helper reported.
++    pub error: Option<String>,
++    /// It said `stopped`, or its output ended.
++    pub stopped: bool,
++}
++
++impl Helper {
++    /// Start the helper at `path` with `args`.
++    pub fn spawn_at(path: &std::path::Path, args: &[&str]) -> Result<Helper, String> {
++        let mut command = Command::new(path);
++        command
++            .args(args)
++            .stdin(Stdio::piped())
++            .stdout(Stdio::piped())
++            // Its log lines (the helper's own, tailscale's) are not the game's.
++            .stderr(Stdio::null());
++        #[cfg(windows)]
++        {
++            use std::os::windows::process::CommandExt;
++            // CREATE_NO_WINDOW: no console flashes up beside the game.
++            command.creation_flags(0x0800_0000);
++        }
++        let mut child = command
++            .spawn()
++            .map_err(|e| format!("couldn't start the Tailcat helper {}: {e}", path.display()))?;
++        let stdout = child.stdout.take().ok_or("the helper has no output")?;
++        let stdin = child.stdin.take();
++        let (send, events) = channel();
++        std::thread::Builder::new()
++            .name("horizon-tailcat-events".into())
++            .spawn(move || {
++                for line in BufReader::new(stdout).lines() {
++                    let Ok(line) = line else { break };
++                    if let Some(event) = Event::parse(&line)
++                        && send.send(event).is_err()
++                    {
++                        break;
++                    }
++                }
++                // The output ended: the helper did.
++                let _ = send.send(Event {
++                    kind: "stopped".into(),
++                    ..Event::default()
++                });
++            })
++            .map_err(|e| e.to_string())?;
++        Ok(Helper {
++            child,
++            stdin,
++            events,
++            error: None,
++            stopped: false,
++        })
++    }
++
++    /// Start the helper wherever [`find_helper`] finds it.
++    pub fn spawn(args: &[&str]) -> Result<Helper, String> {
++        Helper::spawn_at(&find_helper()?, args)
++    }
++
++    /// Share the world on `lan` (a loopback address): the helper answers `ready` with the invitation.
++    pub fn host(lan: SocketAddr) -> Result<Helper, String> {
++        Helper::spawn(&["host", "--target", &lan.to_string()])
++    }
++
++    /// Join the world of `invite`: the helper answers `ready` with the loopback address.
++    pub fn join(invite: &str) -> Result<Helper, String> {
++        Helper::spawn(&["join", "--invite", invite.trim()])
++    }
++
++    fn note(&mut self, event: &Event) {
++        match event.kind.as_str() {
++            "error" => self.error = Some(describe_error(event)),
++            "stopped" => self.stopped = true,
++            _ => {}
++        }
++    }
++
++    /// The events since the last call, without waiting.
++    pub fn poll(&mut self) -> Vec<Event> {
++        let mut out = Vec::new();
++        loop {
++            match self.events.try_recv() {
++                Ok(event) => {
++                    self.note(&event);
++                    out.push(event);
++                }
++                Err(TryRecvError::Empty) => break,
++                Err(TryRecvError::Disconnected) => {
++                    self.stopped = true;
++                    break;
++                }
++            }
++        }
++        out
++    }
++
++    /// Wait for `ready`, up to `timeout`. An error or an end before it is the answer's `Err`.
++    pub fn wait_ready(&mut self, timeout: Duration) -> Result<Event, String> {
++        let end = Instant::now() + timeout;
++        loop {
++            let left = end.saturating_duration_since(Instant::now());
++            match self.events.recv_timeout(left) {
++                Ok(event) => {
++                    self.note(&event);
++                    match event.kind.as_str() {
++                        "ready" => return Ok(event),
++                        "stopped" => {
++                            return Err(self
++                                .error
++                                .clone()
++                                .unwrap_or_else(|| "the Tailcat helper stopped".to_owned()));
++                        }
++                        _ => {}
++                    }
++                }
++                Err(RecvTimeoutError::Timeout) => {
++                    return Err("the Tailcat helper took too long to be ready".to_owned());
++                }
++                Err(RecvTimeoutError::Disconnected) => {
++                    return Err(self
++                        .error
++                        .clone()
++                        .unwrap_or_else(|| "the Tailcat helper stopped".to_owned()));
++                }
++            }
++        }
++    }
++
++    /// End the helper: close its input, which it takes as the order to stop, then make sure.
++    pub fn stop(&mut self) {
++        drop(self.stdin.take());
++        let end = Instant::now() + Duration::from_millis(500);
++        while Instant::now() < end {
++            if matches!(self.child.try_wait(), Ok(Some(_))) {
++                return;
++            }
++            std::thread::sleep(Duration::from_millis(20));
++        }
++        let _ = self.child.kill();
++        let _ = self.child.wait();
++    }
++}
++
++impl Drop for Helper {
++    fn drop(&mut self) {
++        self.stop();
++    }
++}
++
++/// An `error` event as text for the player.
++fn describe_error(event: &Event) -> String {
++    match (event.code.as_str(), event.message.as_str()) {
++        ("", "") => "the Tailcat helper failed".to_owned(),
++        (code, "") => code.to_owned(),
++        ("", message) => message.to_owned(),
++        (code, message) => format!("{message} ({code})"),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn invitations_are_told_by_their_prefix_and_alphabet() {
++        assert!(is_invite("mcl1_eyJ2ZXJzaW9uIjoxfQ"));
++        assert!(is_invite("  mcl1_abc-DEF_123\n"));
++        assert!(!is_invite("mcl1_"));
++        assert!(!is_invite("mcl2_abc"));
++        assert!(!is_invite("K7QM-3XPD"));
++        assert!(!is_invite("mcl1_abc def"));
++        assert!(!is_invite(&format!("mcl1_{}", "a".repeat(MAX_INVITE))));
++    }
++
++    #[test]
++    fn the_public_part_shows_nothing_of_the_invitation() {
++        let invite = "mcl1_eyJ2ZXJzaW9uIjoxfQ";
++        let shown = public_part(invite);
++        assert!(shown.starts_with("tailcat-"));
++        assert!(!shown.contains("eyJ2"));
++        assert_eq!(shown, public_part(&format!(" {invite}\n")));
++        assert_ne!(shown, public_part("mcl1_other"));
++    }
++
++    #[test]
++    fn the_helpers_lines_are_read() {
++        let ready = Event::parse(r#"{"type":"ready","mode":"host","invite":"mcl1_x"}"#).unwrap();
++        assert_eq!(ready.kind, "ready");
++        assert_eq!(ready.invite, "mcl1_x");
++        let join = Event::parse(r#"{"type":"ready","mode":"join","address":"127.0.0.1:41000"}"#);
++        assert_eq!(join.unwrap().address, "127.0.0.1:41000");
++        let error = Event::parse(r#"{"type":"error","code":"invalid_invite","message":"bad"}"#);
++        assert_eq!(describe_error(&error.unwrap()), "bad (invalid_invite)");
++        assert_eq!(Event::parse("2026/11/16 a log line"), None);
++        assert_eq!(Event::parse("{}"), None);
++    }
++
++    /// A shell script stands in for the helper: it speaks the protocol and stops when its input
++    /// closes, as the real one does.
++    #[cfg(unix)]
++    #[test]
++    fn a_helper_is_started_waited_for_and_stopped() {
++        use std::os::unix::fs::PermissionsExt;
++        let dir = std::env::temp_dir().join(format!("horizon-tailcat-test-{}", std::process::id()));
++        std::fs::create_dir_all(&dir).unwrap();
++        let script = dir.join("fake-helper");
++        std::fs::write(
++            &script,
++            "#!/bin/sh\necho 'a log line'\necho '{\"type\":\"ready\",\"mode\":\"join\",\"address\":\"127.0.0.1:4242\"}'\ncat >/dev/null\necho '{\"type\":\"stopped\"}'\n",
++        )
++        .unwrap();
++        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
++        let mut helper = Helper::spawn_at(&script, &[]).unwrap();
++        let ready = helper.wait_ready(Duration::from_secs(10)).unwrap();
++        assert_eq!(ready.address, "127.0.0.1:4242");
++        helper.stop();
++        // Its input closed, so it said `stopped` and ended on its own.
++        assert!(matches!(helper.child.try_wait(), Ok(Some(_))));
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn an_error_before_ready_is_the_answer() {
++        use std::os::unix::fs::PermissionsExt;
++        let dir = std::env::temp_dir().join(format!("horizon-tailcat-err-{}", std::process::id()));
++        std::fs::create_dir_all(&dir).unwrap();
++        let script = dir.join("failing-helper");
++        std::fs::write(
++            &script,
++            "#!/bin/sh\necho '{\"type\":\"error\",\"code\":\"derp_unreachable\",\"message\":\"no DERP\"}'\necho '{\"type\":\"stopped\"}'\n",
++        )
++        .unwrap();
++        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
++        let mut helper = Helper::spawn_at(&script, &[]).unwrap();
++        let err = helper.wait_ready(Duration::from_secs(10)).unwrap_err();
++        assert_eq!(err, "no DERP (derp_unreachable)");
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++}
+diff --git a/crates/horizon-hooks/src/tunnel.rs b/crates/horizon-hooks/src/tunnel.rs
+index 6d8fcca4..1f0b7c68 100644
+--- a/crates/horizon-hooks/src/tunnel.rs
++++ b/crates/horizon-hooks/src/tunnel.rs
+@@ -17,6 +17,9 @@ pub enum Progress {
+     Finding,
+     /// The tunnel reached the host: `direct`ly, or through a relay.
+     Connected { direct: bool },
++    /// A Tailcat helper carries the tunnel (WireGuard, direct or through Tailscale's relays: it
++    /// doesn't say which).
++    Tailcat,
+ }
+ 
+ /// The tunnel's local end: the loopback port to connect to, and the token to send on it first
