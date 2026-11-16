@@ -1,0 +1,304 @@
+name: game
+# Horizon + Tailcat: builds this fork's game for Windows, macOS (Apple Silicon and Intel) and Linux, and
+# publishes it as the `nightly` release the fork's launcher installs and updates from.
+#
+# The game's folder is the official nightly's (its tools, its compiled exporters, DXC on Windows), with
+# three things of this fork's put in it: the game executable (horizon-client) and horizon-ctl, built here
+# from this repository, and the Tailcat helper (mclink-helper, tailcat-helper/), built here from its Go
+# source. Nothing of Mojang's is in it. The launcher prepares the resources from the player's own Minecraft.
+#
+# The release is signed with this repository's RELEASE_SIGNING_KEY secret (public key in
+# crates/horizon-release-sign/fork-release-keys.txt), as the launcher checks before it installs.
+#
+#   gh workflow run game                          # build everything, publish nothing
+#   gh workflow run game -f publish=true          # build, sign and publish the `nightly` release
+#   gh workflow run game -f profile=release       # the release profile (thin LTO: much slower to build)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the nightly release (otherwise build and check only)
+        type: boolean
+        default: false
+      profile:
+        description: Cargo profile of the game (fast = release without LTO)
+        type: choice
+        options: [fast, release]
+        default: fast
+      base_tag:
+        description: Official release whose folders this build starts from
+        type: string
+        default: nightly
+
+permissions:
+  contents: read
+
+concurrency:
+  group: game-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  HORIZON_TELEMETRY_URL: "off"
+  UPSTREAM: horizon-rust/horizon
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      date: ${{ steps.meta.outputs.date }}
+      sha: ${{ steps.meta.outputs.sha }}
+      version: ${{ steps.meta.outputs.version }}
+      title: ${{ steps.meta.outputs.title }}
+      base_title: ${{ steps.meta.outputs.base_title }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_TAG: ${{ inputs.base_tag || 'nightly' }}
+        run: |
+          set -euo pipefail
+          date=$(date -u +%F)
+          sha=$(git rev-parse --short=7 HEAD)
+          base_title=$(gh release view "$BASE_TAG" -R "$UPSTREAM" --json name --jq .name)
+          {
+            echo "date=$date"
+            echo "sha=$sha"
+            # The launcher reads the version a Nightly installs as from its title, strictly.
+            echo "version=nightly-$date-$sha"
+            echo "title=Nightly $date · $sha"
+            echo "base_title=$base_title"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::base: $UPSTREAM $BASE_TAG ($base_title)"
+
+  build:
+    needs: meta
+    name: build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-22.04
+            asset: horizon-linux-x86_64.tar.gz
+            goos: linux
+            goarch: amd64
+          - name: windows
+            os: windows-latest
+            asset: horizon-windows-x64.zip
+            goos: windows
+            goarch: amd64
+            exe: .exe
+            # The C runtime linked in: without it the game asks for VCRUNTIME140.dll.
+            rustflags: -C target-feature=+crt-static
+          - name: macos-arm64
+            # Cross-built on the Intel host, as the launcher is: GitHub's Apple Silicon runners are
+            # regularly unavailable for hours. It can't be run here, only checked for its architecture.
+            os: macos-26-intel
+            target: aarch64-apple-darwin
+            asset: horizon-macos-arm64.zip
+            goos: darwin
+            goarch: arm64
+            arch: arm64
+          - name: macos-x64
+            os: macos-26-intel
+            target: x86_64-apple-darwin
+            asset: horizon-macos-x64.zip
+            goos: darwin
+            goarch: amd64
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      PROFILE: ${{ inputs.profile || 'fast' }}
+      ASSET: ${{ matrix.asset }}
+      EXE: ${{ matrix.exe }}
+      GH_TOKEN: ${{ github.token }}
+      BASE_TAG: ${{ inputs.base_tag || 'nightly' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cross target
+        if: matrix.target != ''
+        run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: game-${{ matrix.name }}-${{ inputs.profile || 'fast' }}
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libasound2-dev libudev-dev pkg-config
+
+      - name: Build the game and horizon-ctl
+        run: |
+          set -euo pipefail
+          cargo build --profile "$PROFILE" --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} \
+            -p horizon-official -p horizon-client-lib --bin horizon-official --bin horizon-ctl
+          out="target/${{ matrix.target && format('{0}/', matrix.target) || '' }}$PROFILE"
+          ls -l "$out/horizon-official$EXE" "$out/horizon-ctl$EXE"
+          echo "BUILT=$out" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tailcat-helper/go.mod
+          cache-dependency-path: tailcat-helper/go.sum
+      - name: Build the Tailcat helper
+        working-directory: tailcat-helper
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          mkdir -p ../helper-out
+          go build -buildvcs=false -tags=ts_omit_ssh -trimpath -ldflags='-s -w' -o "../helper-out/mclink-helper$EXE" ./cmd/mclink-helper
+          ls -l ../helper-out
+
+      - name: The official folder this build starts from
+        run: |
+          set -euo pipefail
+          mkdir base && cd base
+          gh release download "$BASE_TAG" -R "$UPSTREAM" -p "$ASSET" -p SHA256SUMS
+          # The archive is the one the release lists, byte for byte.
+          grep -E "  $ASSET\$" SHA256SUMS > one.sum
+          if command -v sha256sum > /dev/null; then sha256sum -c one.sum; else shasum -a 256 -c one.sum; fi
+          case "$ASSET" in
+            *.tar.gz) tar xzf "$ASSET" ;;
+            *.zip) if command -v 7z > /dev/null; then 7z x -y "$ASSET" > /dev/null; else unzip -q "$ASSET"; fi ;;
+          esac
+          rm -f "$ASSET" SHA256SUMS one.sum
+          ls
+          dir=$(ls -d horizon-*/ | head -1)
+          echo "DIR=${dir%/}" >> "$GITHUB_ENV"
+
+      - name: Put this fork's game and the helper in it
+        run: |
+          set -euo pipefail
+          d="base/$DIR"
+          cp "$BUILT/horizon-official$EXE" "$d/horizon-client$EXE"
+          cp "$BUILT/horizon-ctl$EXE" "$d/horizon-ctl$EXE"
+          cp "helper-out/mclink-helper$EXE" "$d/mclink-helper$EXE"
+          cp tailcat-helper/LICENSE "$d/TAILCAT-LICENSE.txt"
+          chmod +x "$d/horizon-client$EXE" "$d/horizon-ctl$EXE" "$d/mclink-helper$EXE"
+          ls -l "$d"
+
+      - name: Ad hoc signature (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          d="base/$DIR"
+          codesign --force --sign - "$d/horizon-client" "$d/horizon-ctl" "$d/mclink-helper"
+          codesign --verify --verbose "$d/horizon-client" "$d/horizon-ctl" "$d/mclink-helper"
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          d="base/$DIR"
+          file "$d/horizon-client$EXE" "$d/mclink-helper$EXE" || true
+          if [[ -n "${{ matrix.arch }}" && "${{ matrix.arch }}" != "x86_64" ]]; then
+            # Cross-built Apple Silicon binaries can't run on the Intel host: check what they are.
+            file "$d/horizon-client" | grep -q arm64
+            file "$d/mclink-helper" | grep -q arm64
+            echo "::notice::cross-built for ${{ matrix.arch }}: not run, architecture checked"
+          else
+            "$d/horizon-client$EXE" --help | head -3
+            # The helper answers an unknown command with its JSON error, then `stopped`.
+            out=$("$d/mclink-helper$EXE" bogus < /dev/null || true)
+            echo "$out"
+            echo "$out" | grep -q '"type":"stopped"'
+          fi
+
+      - name: Pack
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cd base
+          case "$ASSET" in
+            *.tar.gz) tar czf "../out/$ASSET" --owner=0 --group=0 "$DIR" ;;
+            *.zip) if [[ "$RUNNER_OS" == "Windows" ]]; then 7z a "../out/$ASSET" "$DIR" > /dev/null; else zip -qry "../out/$ASSET" "$DIR"; fi ;;
+          esac
+          ls -l ../out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    needs: [meta, build]
+    if: inputs.publish == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DATE: ${{ needs.meta.outputs.date }}
+      SHA: ${{ needs.meta.outputs.sha }}
+      VERSION: ${{ needs.meta.outputs.version }}
+      TITLE: ${{ needs.meta.outputs.title }}
+      BASE_TITLE: ${{ needs.meta.outputs.base_title }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Sign
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_SIGNING_KEY" ]] || { echo "::error::the RELEASE_SIGNING_KEY secret is not set"; exit 1; }
+          ls -l dist
+          # SHA256SUMS.sig is for the channel (`nightly`), SHA256SUMS.v2.sig for this build's own version.
+          ALSO_FOR="$VERSION" bash tools/ci/sign_release.sh nightly dist/*.zip dist/*.tar.gz
+      - name: Check the signatures as the launcher does
+        run: |
+          set -euo pipefail
+          # The key in fork-release-keys.txt that signed, as a DER public key openssl reads.
+          check() {  # tag, signature file
+            local tag=$1 sig=$2 ok=1
+            { printf 'horizon release %s\n' "$tag"; cat dist/SHA256SUMS; } > message
+            while read -r key; do
+              [[ -z "$key" || "$key" == \#* ]] && continue
+              { printf '302a300506032b6570032100'; printf '%s' "$key" | base64 --decode | xxd -p -c 64; } | xxd -r -p > key.der
+              while read -r line; do
+                printf '%s' "$line" | base64 --decode > sig.bin
+                if openssl pkeyutl -verify -pubin -inkey key.der -keyform DER -rawin -in message -sigfile sig.bin > /dev/null 2>&1; then ok=0; fi
+              done < "$sig"
+            done < crates/horizon-release-sign/fork-release-keys.txt
+            [[ $ok == 0 ]] || { echo "::error::$sig is signed by none of fork-release-keys.txt"; exit 1; }
+            echo "$sig verifies for $tag"
+          }
+          check nightly dist/SHA256SUMS.sig
+          check "$VERSION" dist/SHA256SUMS.v2.sig
+          (cd dist && sha256sum -c SHA256SUMS)
+      - name: Publish the nightly release
+        run: |
+          set -euo pipefail
+          {
+            echo "Horizon + Tailcat, built automatically from this repository ($SHA)."
+            echo
+            echo "- The game executable and horizon-ctl are this fork's, with Tailcat for Minecraft built in: Play with Friends > Share with Tailcat, and an \`mcl1_...\` invitation joins from Direct Connection or Join a Friend."
+            echo "- The Tailcat helper (mclink-helper) is in the folder, built from tailcat-helper/ (BSD-3-Clause, Tailscale Inc & contributors). Not an official Tailscale product."
+            echo "- The rest of the folder (tools, compiled exporters, DXC on Windows) is the official one: $BASE_TITLE."
+            echo "- Contains no file of Mojang's: the launcher prepares the resources from your own Minecraft."
+          } > notes.md
+          gh release delete nightly -R "$GITHUB_REPOSITORY" --cleanup-tag --yes 2> /dev/null || true
+          gh release create nightly -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "$TITLE" --notes-file notes.md dist/*

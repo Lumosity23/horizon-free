@@ -229,7 +229,8 @@ fn each_platform_download_is_bound_to_the_fork_not_the_provider_url() {
                 parsed[0].asset,
                 Some((
                     format!(
-                        "https://github.com/horizon-rust/horizon/releases/download/{tag}/{expected}"
+                        "https://github.com/{}/releases/download/{tag}/{expected}",
+                        crate::backend::GAME_REPO
                     ),
                     9
                 ))
@@ -259,7 +260,8 @@ fn decoy_asset_names_never_replace_the_exact_platform_asset() {
                 got[0].asset,
                 Some((
                     format!(
-                        "https://github.com/horizon-rust/horizon/releases/download/{encoded}/{asset}"
+                        "https://github.com/{}/releases/download/{encoded}/{asset}",
+                        crate::backend::GAME_REPO
                     ),
                     2
                 ))
@@ -282,7 +284,10 @@ fn decoy_asset_names_never_replace_the_exact_platform_asset() {
     assert!(draft.is_empty());
     assert_eq!(
         crate::signed::asset_url("../../x", "../evil.zip"),
-        "https://github.com/horizon-rust/horizon/releases/download/..%2F..%2Fx/..%2Fevil.zip"
+        format!(
+            "https://github.com/{}/releases/download/..%2F..%2Fx/..%2Fevil.zip",
+            crate::backend::GAME_REPO
+        )
     );
 }
 

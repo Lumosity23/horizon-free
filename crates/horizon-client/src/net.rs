@@ -778,6 +778,7 @@ fn join_friend(
             tunnel::Progress::Connected { direct: false } => {
                 "horizon.multiplayer.connected_friend_relay"
             }
+            tunnel::Progress::Tailcat => "horizon.multiplayer.connected_friend_tailcat",
         };
         status(send, &tr(lang, key));
     };

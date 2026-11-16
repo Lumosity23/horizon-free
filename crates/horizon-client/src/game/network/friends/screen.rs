@@ -45,6 +45,8 @@ pub struct FriendsView {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Share,
+    /// Share through the Tailcat helper instead.
+    ShareTailcat,
     Copy,
     Stop,
     /// Open the troubleshooting page.
@@ -172,6 +174,14 @@ fn layout(
             action: Action::Share,
             active: view.shown,
         });
+        buttons.push(Button {
+            x: cx - 100.0,
+            y: y + 32.0,
+            w: 200.0,
+            label: tr("horizon.friends.share_tailcat", "Share with Tailcat"),
+            action: Action::ShareTailcat,
+            active: view.shown,
+        });
     }
     // HeaderAndFooterLayout's footer: Done, beside Troubleshooting when
     // friends on the internet can't reach the host.
@@ -204,7 +214,8 @@ fn layout(
     }
     (lines, buttons)
 }
-/// The code's groups packed into lines of at most `width`.
+/// The code's groups packed into lines of at most `width`. A group wider than a line (a Tailcat
+/// invitation is one long run of characters) is cut where the line ends.
 fn code_lines(atlas: &HudAtlas, code: &str, width: f32) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for group in code.split('-') {
@@ -212,6 +223,18 @@ fn code_lines(atlas: &HudAtlas, code: &str, width: f32) -> Vec<String> {
             Some(l) if HudBatch::text_width(atlas, &format!("{l}-{group}")) <= width => {
                 l.push('-');
                 l.push_str(group);
+            }
+            _ if HudBatch::text_width(atlas, group) > width => {
+                let mut line = String::new();
+                for c in group.chars() {
+                    line.push(c);
+                    if HudBatch::text_width(atlas, &line) > width {
+                        line.pop();
+                        lines.push(std::mem::take(&mut line));
+                        line.push(c);
+                    }
+                }
+                lines.push(line);
             }
             _ => lines.push(group.to_owned()),
         }
@@ -333,6 +356,52 @@ mod tests {
                 Some(action)
             );
         }
+    }
+
+    #[test]
+    fn tailcat_is_offered_beside_start_sharing_and_its_long_invitation_fits() {
+        let atlas = atlas();
+        let size = (427.0, 240.0);
+        let idle = FriendsView {
+            shown: true,
+            ..FriendsView::default()
+        };
+        let (_, buttons) = layout(&atlas, size, &idle);
+        let tailcat = buttons
+            .iter()
+            .find(|b| b.action == Action::ShareTailcat)
+            .unwrap();
+        assert!(tailcat.active);
+        assert!(tailcat.y + 20.0 <= size.1 - 27.0, "above the footer");
+        assert_eq!(
+            click(&atlas, size, (tailcat.x + 1.0, tailcat.y + 1.0), &idle),
+            Some(Action::ShareTailcat)
+        );
+
+        // An invitation is one run of characters with no dash to break at.
+        let invite = format!("mcl1_{}", "eyJ2ZXJzaW9uIjoxLCJ0YWlsY2F0Ijoi".repeat(4));
+        let sharing = FriendsView {
+            shown: true,
+            sharing: true,
+            code: Some(invite.clone()),
+            status: "Friends join through Tailcat.".into(),
+            reachable: true,
+            ..FriendsView::default()
+        };
+        let (lines, buttons) = layout(&atlas, size, &sharing);
+        let width = (size.0 - 40.0).min(310.0);
+        let shown: String = lines
+            .iter()
+            // The sentences have spaces; the invitation's lines have none.
+            .filter(|(text, _, _)| !text.contains(' '))
+            .map(|(text, _, _)| text.as_str())
+            .collect();
+        assert_eq!(shown, invite, "every character of the invitation is drawn");
+        for (text, _, y) in &lines {
+            assert!(HudBatch::text_width(&atlas, text) <= width, "{text} fits");
+            assert!(y + 9.0 <= size.1 - 27.0, "the text stays above the footer");
+        }
+        assert!(buttons.iter().any(|b| b.action == Action::Copy && b.active));
     }
 
     #[test]

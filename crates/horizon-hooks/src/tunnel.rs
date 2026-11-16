@@ -17,6 +17,9 @@ pub enum Progress {
     Finding,
     /// The tunnel reached the host: `direct`ly, or through a relay.
     Connected { direct: bool },
+    /// A Tailcat helper carries the tunnel (WireGuard, direct or through Tailscale's relays: it
+    /// doesn't say which).
+    Tailcat,
 }
 
 /// The tunnel's local end: the loopback port to connect to, and the token to send on it first

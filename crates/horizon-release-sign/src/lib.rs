@@ -29,6 +29,10 @@ pub const SIGNATURE: &str = "SHA256SUMS.sig";
 pub const SIGNATURE_V2: &str = "SHA256SUMS.v2.sig";
 
 const KEYS: &str = include_str!("../release-keys.txt");
+/// Horizon + Tailcat's own key, for its own repository only (`repository_keys`).
+const FORK_KEYS: &str = include_str!("../fork-release-keys.txt");
+/// The repository the fork publishes its game and launcher builds in (the launcher's `GAME_REPO`).
+pub const FORK_REPOSITORY: &str = "Lumosity23/horizon-free";
 const LEGACY: &str = include_str!("../legacy-releases.txt");
 
 /// An Ed25519 public key.
@@ -40,8 +44,8 @@ pub fn trusted_keys() -> Vec<PublicKey> {
     trusted_keys_for("horizon-rust/horizon")
 }
 
-/// Repository-scoped release trust: `release-keys.txt` for horizon-rust/horizon. Any other repository has no
-/// trusted keys, so its downloads fail closed.
+/// Repository-scoped release trust: `release-keys.txt` for horizon-rust/horizon, `fork-release-keys.txt` for
+/// [`FORK_REPOSITORY`]. Any other repository has no trusted keys, so its downloads fail closed.
 pub fn trusted_keys_for(repository: &str) -> Vec<PublicKey> {
     parse_keys(repository_keys(repository, KEYS)).unwrap_or_default()
 }
@@ -92,6 +96,7 @@ fn extra_sdk_keys() -> Vec<PublicKey> {
 fn repository_keys<'a>(repository: &str, keys: &'a str) -> &'a str {
     match repository {
         "horizon-rust/horizon" => keys,
+        FORK_REPOSITORY => FORK_KEYS,
         _ => "",
     }
 }
@@ -559,6 +564,15 @@ impl SigningKey {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_forks_key_is_trusted_for_its_repository_only() {
+        let fork = trusted_keys_for(FORK_REPOSITORY);
+        assert_eq!(fork.len(), 1, "fork-release-keys.txt lists the fork's key");
+        // Not for upstream, whose keys are another's, and nothing is trusted for a stranger.
+        assert!(trusted_keys().iter().all(|k| !fork.contains(k)));
+        assert!(trusted_keys_for("someone/else").is_empty());
+    }
+
     #[test]
     fn repository_trust_is_isolated_and_unknown_repositories_fail_closed() {
         let (upstream, _) = SigningKey::generate().unwrap();

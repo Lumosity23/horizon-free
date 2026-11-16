@@ -1775,6 +1775,9 @@ struct Game<'a> {
     /// The open world is shared behind an invite code (game/network/friends.rs).
     #[cfg(feature = "friends")]
     friends: Option<friends::Sharing>,
+    /// The open world is shared through a Tailcat helper instead (game/friends.rs).
+    #[cfg(feature = "friends")]
+    tailcat_share: Option<friends::TailcatSharing>,
     /// The Social Interactions screen and the players whose chat is hidden (game/network/social.rs).
     social: social::Social,
     world_options: Option<lan_screen::WorldOptions>,
@@ -11083,6 +11086,8 @@ impl<'a> Game<'a> {
             game_tests: game_tests::GameTests::default(),
             #[cfg(feature = "friends")]
             friends: None,
+            #[cfg(feature = "friends")]
+            tailcat_share: None,
             social: Default::default(),
             debug_keys: Default::default(),
             debug_charts: Default::default(),

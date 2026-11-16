@@ -552,9 +552,9 @@ pub const COMMANDS: &[Cmd] = &[
         "PORT 0 or none picks one; commands lets guests use cheats; force forces the game mode. Only when the player asks.",
         ["horizon-ctl lan open", "horizon-ctl lan status", "horizon-ctl lan close"],
         &[p("action", Ty::Enum(&["open", "close", "status"]), "what to do"), opt("port", Ty::Int, "port for open"), opt("commands", Ty::Bool, "allow cheats"), opt("force", Ty::Bool, "force the game mode")], mcp: true, local: false),
-    cmd!("friends", Multiplayer, "friends host|stop|status", "Play with Friends: share the open world behind an invite code, stop, or see who joined",
-        "status gives the code: share it only when the player asks. Friends join with connect friend:CODE.",
-        ["horizon-ctl friends host", "horizon-ctl friends status"], &[p("action", Ty::Enum(&["host", "stop", "status"]), "what to do")], mcp: true, local: false),
+    cmd!("friends", Multiplayer, "friends host|tailcat|stop|status", "Play with Friends: share the open world behind an invite code (or through the Tailcat helper), stop, or see who joined",
+        "status gives the code: share it only when the player asks. Friends join with connect friend:CODE; a Tailcat invitation (mcl1_...) joins the same way.",
+        ["horizon-ctl friends host", "horizon-ctl friends tailcat", "horizon-ctl friends status"], &[p("action", Ty::Enum(&["host", "tailcat", "stop", "status"]), "what to do")], mcp: true, local: false),
     // World
     cmd!("give", World, "give ITEM [COUNT]", "add items to the inventory", "", ["horizon-ctl give oak_log 16"],
         &[p("item", Ty::Str, "item id"), opt("count", Ty::Int, "how many (default 1)")], mcp: true, local: false),

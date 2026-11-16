@@ -132,7 +132,7 @@ passes on without checking it).
 | Servers list | Multiplayer | yes | yes | `servers` (names and addresses; reads servers.dat) |
 | Join a server or an invite code, leave | Multiplayer | yes | yes | `connect`, `disconnect` |
 | Open to LAN | Pause > Open to LAN | yes | yes | `lan open\|close\|status` |
-| Play with Friends: host, stop, status | Pause | yes | yes | `friends host\|stop\|status` |
+| Play with Friends: host, stop, status | Pause | yes | yes | `friends host\|tailcat\|stop\|status` |
 | Vanilla options, every page | Options | yes | yes | `options-get`, `options-set` (all of options.txt, typed) |
 | Horizon Settings: Extras, PvP & HUD, AI Agent; the graphics screen (Video Settings); Controller (Controls) | Horizon Settings, Video Settings, Controls | yes | yes | `options horizon\|graphics\|extras\|agent...`, then `ui`/`click`/`set` |
 | Agent control on or off, status, connection details | Horizon Settings > AI Agent | yes | yes | `options horizon`, the page's widgets (`ai-agent`) |

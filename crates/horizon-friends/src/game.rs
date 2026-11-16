@@ -6,6 +6,7 @@ use crate::{
     PathMode,
     guest::{self, GuestConfig},
     invite::{Parsed, parse},
+    tailcat::{self, Helper},
 };
 use horizon_platform::{
     hooks::{
@@ -14,7 +15,7 @@ use horizon_platform::{
     },
     version::{PROTOCOL_VERSION, VANILLA_VERSION},
 };
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Mutex};
 
 /// What `horizon-official` registers: Play with Friends' hooks.
 pub static HOOKS: Friends = Friends;
@@ -29,8 +30,38 @@ impl Hooks for Friends {
 
 struct Invites;
 
+/// The helper of the Tailcat world this game joined: it carries the session, so it lives until
+/// the next join (which replaces it) or the game ends (its input closes with the process).
+static TAILCAT_GUEST: Mutex<Option<Helper>> = Mutex::new(None);
+
+/// Join a Tailcat invitation: start the helper and give the loopback port it listens on.
+fn open_tailcat(invite: &str, progress: &mut dyn FnMut(Progress)) -> Result<Opened, String> {
+    progress(Progress::Finding);
+    // The previous join's helper ends first: one world at a time.
+    drop(TAILCAT_GUEST.lock().map_err(|e| e.to_string())?.take());
+    let mut helper = Helper::join(invite)?;
+    let ready = helper.wait_ready(tailcat::READY_TIMEOUT)?;
+    let port = ready
+        .address
+        .parse::<SocketAddr>()
+        .ok()
+        .filter(|a| a.ip().is_loopback())
+        .map(|a| a.port())
+        .ok_or("the Tailcat helper gave no loopback address")?;
+    progress(Progress::Tailcat);
+    *TAILCAT_GUEST.lock().map_err(|e| e.to_string())? = Some(helper);
+    // The helper's port is its own: no token is sent on it.
+    Ok(Opened {
+        port,
+        token: Vec::new(),
+    })
+}
+
 impl Resolver for Invites {
     fn is_code(&self, code: &str, full: bool) -> bool {
+        if tailcat::is_invite(code) {
+            return true;
+        }
         match parse(code) {
             Some(Parsed::Long(_)) => true,
             Some(Parsed::Short(_)) => !full,
@@ -39,6 +70,9 @@ impl Resolver for Invites {
     }
 
     fn nameplate(&self, code: &str) -> Option<String> {
+        if tailcat::is_invite(code) {
+            return None;
+        }
         match parse(code) {
             Some(Parsed::Short(c)) => Some(c.nameplate),
             _ => None,
@@ -48,6 +82,9 @@ impl Resolver for Invites {
     /// The relay is kept beside the addresses: two hosts on other networks can
     /// share a private address and the fixed direct port.
     fn public_part(&self, code: &str) -> String {
+        if tailcat::is_invite(code) {
+            return tailcat::public_part(code);
+        }
         match parse(code) {
             Some(Parsed::Short(code)) => code.nameplate,
             Some(Parsed::Long(invite)) => {
@@ -71,6 +108,9 @@ impl Resolver for Invites {
         relay: Option<String>,
         progress: &mut dyn FnMut(Progress),
     ) -> Result<Opened, String> {
+        if tailcat::is_invite(code) {
+            return open_tailcat(code, progress);
+        }
         progress(Progress::Finding);
         let tunnel = guest::join(&GuestConfig {
             code: code.to_owned(),

@@ -1309,5 +1309,10 @@
   "horizon.options.menu_focus": "Focus",
   "horizon.options.menu_navigation": "Menu Navigation",
   "horizon.options.menu_pointer": "Pointer",
-  "horizon.screenshot.canceled": "Screenshot canceled"
+  "horizon.screenshot.canceled": "Screenshot canceled",
+  "horizon.multiplayer.connected_friend_tailcat": "Connected to your friend through Tailcat...",
+  "horizon.friends.share_tailcat": "Share with Tailcat",
+  "horizon.friends.tailcat_finding": "Finding a route through Tailcat...",
+  "horizon.friends.tailcat_ready": "Friends join with this invitation through Tailcat. It works through routers and firewalls, with no port to open.",
+  "horizon.friends.tailcat_failed": "Tailcat stopped: %s"
 }

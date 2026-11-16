@@ -17,7 +17,12 @@ pub const REPO: &str = "horizon-rust/horizon";
 pub fn issues_url() -> String {
     format!("https://github.com/{REPO}/issues")
 }
-pub const LAUNCHER_REPO: &str = "0CYBER/horizon-free";
+/// Horizon + Tailcat: the game's own builds (the official nightly's folder with this fork's game
+/// executable and the Tailcat helper in it) and the launcher's are published in this repository,
+/// signed with its own key (`crates/horizon-release-sign/fork-release-keys.txt`). `REPO` stays upstream's:
+/// the mirror, native mods' sources and the like still read Horizon's.
+pub const GAME_REPO: &str = "Lumosity23/horizon-free";
+pub const LAUNCHER_REPO: &str = "Lumosity23/horizon-free";
 /// Horizon-free: the game starts without a Microsoft account that owns it, in the window and on
 /// the command line. Downloads still need an owner, so the game comes from the player's own install.
 pub const OFFLINE_PLAY: bool = true;
@@ -660,7 +665,7 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 /// ETag, and read through Kira's mirror past GitHub's rate limit: [`crate::github`]).
 fn release_list() -> Result<serde_json::Value, String> {
     Ok(crate::github::json_optional(&format!(
-        "https://api.github.com/repos/{REPO}/releases?per_page=100"
+        "https://api.github.com/repos/{GAME_REPO}/releases?per_page=100"
     ))?
     .unwrap_or_else(|| serde_json::json!([])))
 }
@@ -1168,7 +1173,7 @@ fn signed_digest(tag: &str, asset: &str) -> Result<String, String> {
     crate::signed::digest(
         tag,
         asset,
-        &horizon_release_sign::trusted_keys_for(REPO),
+        &horizon_release_sign::trusted_keys_for(GAME_REPO),
         fetch_small,
     )
 }
@@ -1300,7 +1305,7 @@ pub fn install(release: &Release, progress: impl Fn(f32)) -> Result<(), String> 
                 github_tag,
                 &version,
                 asset,
-                &horizon_release_sign::trusted_keys_for(REPO),
+                &horizon_release_sign::trusted_keys_for(GAME_REPO),
                 fetch_small,
             )?
         }
@@ -3222,7 +3227,10 @@ pub const SIGN_IN_HINT: &str = "Sign in with `horizon-launcher account sign-in`.
 
 /// Start the game straight into a friend's world: `--server friend:CODE`.
 pub fn join_friend(cmd: &mut Command, code: &str) -> Result<(), String> {
-    horizon_friends::invite::parse_detailed(code).map_err(|e| e.to_string())?;
+    // A Tailcat invitation is the helper's to read; the game's own codes are checked here.
+    if !horizon_friends::tailcat::is_invite(code) {
+        horizon_friends::invite::parse_detailed(code).map_err(|e| e.to_string())?;
+    }
     let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
     cmd.arg("--server")
         .arg(format!("{}{code}", horizon_friends::ADDRESS_PREFIX));

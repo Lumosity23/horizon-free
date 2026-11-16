@@ -10,7 +10,9 @@
 //! horizon-official.
 use super::{Game, lan::LanSettings};
 use horizon_client::{Result, hud::HudBatch, lang, text::Text};
-use horizon_friends::{Host, HostConfig, HostEvent, PathMode, host::DEFAULT_PORT, reach, stun};
+use horizon_friends::{
+    Host, HostConfig, HostEvent, PathMode, host::DEFAULT_PORT, reach, stun, tailcat::Helper,
+};
 use horizon_protocol::{GAME_VERSION, PROTOCOL_VERSION};
 use std::time::{Duration, Instant};
 
@@ -33,8 +35,20 @@ pub(super) struct Sharing {
     paths: (u32, u32),
 }
 
+/// The open world shared through a Tailcat helper (horizon-friends' `tailcat`): the helper carries
+/// the guests' sessions to the world's LAN port. One kind of sharing at a time.
+pub(super) struct TailcatSharing {
+    helper: Helper,
+    /// Sharing opened the world to LAN, so stopping closes it again.
+    opened_lan: bool,
+    /// The `mcl1_...` invitation, once the helper has found its route.
+    invite: Option<String>,
+    copied: Option<Instant>,
+}
+
 pub const HELP: &[&str] = &[
     "friends host                   share the open world behind an invite code",
+    "friends tailcat                share the open world through the Tailcat helper",
     "friends stop                   stop sharing",
     "friends status                 the code, how friends reach this host, the guests",
 ];
@@ -56,11 +70,9 @@ fn env_flag(name: &str, default: bool) -> bool {
 }
 
 impl Game<'_> {
-    /// Start sharing the open world.
-    pub(super) fn friends_start(&mut self) -> Result<()> {
-        if self.friends.is_some() {
-            return Ok(());
-        }
+    /// The LAN port of the world to share, opening the world to LAN if it isn't (with Open to
+    /// LAN's defaults); whether sharing opened it, so stopping closes it again.
+    fn friends_world_port(&mut self) -> Result<(bool, u16)> {
         // Single player on its server thread shares that server, as Open to
         // LAN publishes it; another server can't be shared.
         if self.title.is_some() || (self.remote.is_some() && self.integrated.is_none()) {
@@ -76,6 +88,15 @@ impl Game<'_> {
             })?;
         }
         let port = self.lan_port().ok_or("the world isn't open to LAN")?;
+        Ok((opened_lan, port))
+    }
+
+    /// Start sharing the open world.
+    pub(super) fn friends_start(&mut self) -> Result<()> {
+        if self.friends.is_some() || self.tailcat_share.is_some() {
+            return Ok(());
+        }
+        let (opened_lan, port) = self.friends_world_port()?;
         let host = match Host::start(HostConfig {
             lan: std::net::SocketAddr::from(([127, 0, 0, 1], port)),
             protocol: PROTOCOL_VERSION,
@@ -114,9 +135,91 @@ impl Game<'_> {
         Ok(())
     }
 
+    /// Start sharing the open world through the Tailcat helper: its invitation arrives once the
+    /// helper has found a route (`tick_friends`).
+    pub(super) fn friends_start_tailcat(&mut self) -> Result<()> {
+        if self.friends.is_some() || self.tailcat_share.is_some() {
+            return Ok(());
+        }
+        let (opened_lan, port) = self.friends_world_port()?;
+        match Helper::host(std::net::SocketAddr::from(([127, 0, 0, 1], port))) {
+            Ok(helper) => {
+                self.tailcat_share = Some(TailcatSharing {
+                    helper,
+                    opened_lan,
+                    invite: None,
+                    copied: None,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                if opened_lan {
+                    self.lan_close(true);
+                }
+                Err(e.into())
+            }
+        }
+    }
+
+    /// The helper is gone or stopped sharing: its invitation ends, and the world closes to LAN
+    /// again if sharing opened it.
+    fn tailcat_stop(&mut self) {
+        let Some(mut share) = self.tailcat_share.take() else {
+            return;
+        };
+        share.helper.stop();
+        if share.opened_lan {
+            self.lan_close(true);
+        }
+    }
+
+    /// The helper's events, once a tick: its invitation, or why it stopped.
+    fn tick_tailcat(&mut self) {
+        let Some(share) = self.tailcat_share.as_mut() else {
+            return;
+        };
+        let mut announce = false;
+        for event in share.helper.poll() {
+            if event.kind == "ready" && !event.invite.is_empty() && share.invite.is_none() {
+                share.invite = Some(event.invite);
+                announce = true;
+            }
+        }
+        let failed = share.helper.stopped.then(|| {
+            share
+                .helper
+                .error
+                .clone()
+                .unwrap_or_else(|| "the helper stopped".to_owned())
+        });
+        if let Some(reason) = failed {
+            self.tailcat_stop();
+            self.system_message(Text::literal(
+                lang::get_or("horizon.friends.tailcat_failed", "Tailcat stopped: %s")
+                    .replacen("%s", &reason, 1),
+            ));
+        } else if announce {
+            self.system_message(Text::literal(lang::get_or(
+                "horizon.friends.code_ready",
+                "Your invite code is ready: Game Menu, Play with Friends. Copy it and send it to your friends.",
+            )));
+        }
+    }
+
     /// Stop sharing: the code ends (direct port closed, router mapping
     /// deleted); the world closes to LAN again if sharing opened it.
     pub(super) fn friends_stop(&mut self) {
+        if let Some(opened_lan) = self.tailcat_share.as_ref().map(|t| t.opened_lan) {
+            self.tailcat_stop();
+            // Closing the LAN says so itself.
+            if !opened_lan {
+                self.system_message(Text::literal(lang::get_or(
+                    "horizon.friends.stopped",
+                    "Stopped sharing the invite code.",
+                )));
+            }
+            return;
+        }
         let Some(mut sharing) = self.friends.take() else {
             return;
         };
@@ -136,10 +239,15 @@ impl Game<'_> {
         if let Some(mut sharing) = self.friends.take() {
             sharing.host.stop();
         }
+        // The LAN server is already closing: the helper just ends.
+        if let Some(mut share) = self.tailcat_share.take() {
+            share.helper.stop();
+        }
     }
 
     /// New codes and sessions, once a tick and while the pause menu is drawn.
     pub(super) fn tick_friends(&mut self) {
+        self.tick_tailcat();
         let Some(sharing) = self.friends.as_mut() else {
             return;
         };
@@ -190,7 +298,12 @@ impl Game<'_> {
     }
 
     pub(super) fn friends_copy(&mut self) {
-        let Some(code) = self.friends.as_ref().and_then(|s| s.code.clone()) else {
+        let code = match (&self.friends, &self.tailcat_share) {
+            (Some(s), _) => s.code.clone(),
+            (None, Some(t)) => t.invite.clone(),
+            (None, None) => None,
+        };
+        let Some(code) = code else {
             return;
         };
         use horizon_client::clipboard::Clipboard;
@@ -198,6 +311,19 @@ impl Game<'_> {
         if let Some(s) = self.friends.as_mut() {
             s.copied = Some(Instant::now());
         }
+        if let Some(t) = self.tailcat_share.as_mut() {
+            t.copied = Some(Instant::now());
+        }
+    }
+
+    fn friends_share_failed(&mut self, e: &dyn std::fmt::Display) {
+        self.system_message(Text::literal(
+            lang::get_or(
+                "horizon.friends.share_failed",
+                "Couldn't share the world: %s",
+            )
+            .replacen("%s", &e.to_string(), 1),
+        ));
     }
 
     /// Play with Friends. The world is paused under it in singleplayer, so
@@ -228,13 +354,12 @@ impl Game<'_> {
         match action {
             Action::Share => {
                 if let Err(e) = self.friends_start() {
-                    self.system_message(Text::literal(
-                        lang::get_or(
-                            "horizon.friends.share_failed",
-                            "Couldn't share the world: %s",
-                        )
-                        .replacen("%s", &e.to_string(), 1),
-                    ));
+                    self.friends_share_failed(&e);
+                }
+            }
+            Action::ShareTailcat => {
+                if let Err(e) = self.friends_start_tailcat() {
+                    self.friends_share_failed(&e);
                 }
             }
             Action::Copy => self.friends_copy(),
@@ -267,6 +392,32 @@ impl Game<'_> {
             }
             None => Vec::new(),
         };
+        if let Some(t) = &self.tailcat_share {
+            return FriendsView {
+                shown: true,
+                sharing: true,
+                code: t.invite.clone(),
+                status: if t.invite.is_none() {
+                    lang::get_or(
+                        "horizon.friends.tailcat_finding",
+                        "Finding a route through Tailcat...",
+                    )
+                } else {
+                    lang::get_or(
+                        "horizon.friends.tailcat_ready",
+                        "Friends join with this invitation through Tailcat. It works through routers and firewalls, with no port to open.",
+                    )
+                },
+                // Tailscale's relays carry it when nothing direct does.
+                reachable: true,
+                help: None,
+                guests,
+                notice: None,
+                copied: t
+                    .copied
+                    .is_some_and(|c| c.elapsed() < Duration::from_secs(2)),
+            };
+        }
         let Some(s) = &self.friends else {
             return FriendsView {
                 shown: self.remote.is_none() || self.integrated.is_some(),
@@ -319,6 +470,10 @@ impl Game<'_> {
                 self.friends_start()?;
                 Ok(Some(json!({ "ok": true, "lan_port": self.lan_port() })))
             }
+            Some("tailcat") => {
+                self.friends_start_tailcat()?;
+                Ok(Some(json!({ "ok": true, "lan_port": self.lan_port() })))
+            }
             Some("stop") => {
                 self.friends_stop();
                 Ok(Some(json!({ "ok": true })))
@@ -339,10 +494,12 @@ impl Game<'_> {
                     "direct": self.friends.as_ref().map_or(0, |s| s.paths.0),
                     "relayed": self.friends.as_ref().map_or(0, |s| s.paths.1),
                     "guests": view.guests,
+                    "tailcat": self.tailcat_share.is_some(),
+                    "tailcat_invite": self.tailcat_share.as_ref().and_then(|t| t.invite.clone()),
                     "lan_port": self.lan_port(),
                 })))
             }
-            _ => Err("friends host|stop|status".into()),
+            _ => Err("friends host|tailcat|stop|status".into()),
         }
     }
 }

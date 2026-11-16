@@ -1,87 +1,57 @@
-> [!WARNING]
-> This repository is not in any way affiliated with Horizon original devs or Microsoft/Mojang.
->
-> The goal of this fork is to return local account play with **YOUR** minecraft assets without Microsoft profile authentication
->
-> You can download it's builds in [RELEASES](https://github.com/0CYBER/horizon-free/releases/latest) section
->
-> Lower part of the README is fully original
+# Horizon + Tailcat
 
-<br><br><br><br>
+**Horizon with Tailcat for Minecraft built in.**
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/media/readme/title-dark.png">
-    <img src="docs/media/readme/title-light.png" alt="Horizon" width="320">
-  </picture>
-</p>
+[Horizon](https://github.com/horizon-rust/horizon) is Minecraft: Java Edition 26.3 rebuilt in Rust. This
+fork adds [Tailcat for Minecraft](https://github.com/tailscale/tailcat-for-minecraft): share your world
+with friends over an encrypted WireGuard tunnel, with no port to open on your router and no VPN to install.
 
-<p align="center">
-  <b>Minecraft: Java Edition 26.3, rewritten from scratch in Rust.</b><br>
-  It opens your worlds, generates the same terrain and plays by the same rules, without Java.
-</p>
+## How to play with friends
 
-<p align="center">
-  <a href="https://playhorizon.dev/download"><img src="docs/media/readme/download-button.png" alt="Download the Horizon launcher for Windows, macOS and Linux" width="400"></a><br>
-  <sub>You need your own copy of Minecraft: Java Edition.</sub>
-</p>
+1. Open a world, press Esc, click the **Play with Friends** icon, then **Share with Tailcat**.
+2. Copy the invitation (`mcl1_...`) and send it to your friends.
+3. They paste it in **Direct Connection** or **Join a Friend**, in the game or in the launcher.
 
-<p align="center">
-  <a href="https://playhorizon.dev/docs/install"><b>Install guide</b></a> ·
-  <a href="https://playhorizon.dev/docs/"><b>Docs</b></a> ·
-  <a href="https://playhorizon.dev/mods"><b>Mods</b></a> ·
-  <a href="https://discord.gg/playhorizon"><b>Discord</b></a>
-</p>
+Friends need this version of Horizon too. Everything runs from the launcher: there is nothing to type in a
+terminal.
 
-<p align="center">
-  <img src="docs/media/readme/hero-lookout.webp" alt="A player's view from a wooden lookout over a village: a friend in diamond armour sneaks at the edge while a creeper flashes white behind her, another friend rides a horse between the houses below, and forest, snowy peaks and the sea run to the horizon" width="100%">
-</p>
+## Downloads
 
-<p align="center">
-  <img src="docs/media/readme/signs.webp" alt="Three wooden signs: 3.5x faster start than modded Java, 38 percent more FPS than Java with Sodium, and a mod API to port your mods to Rust" width="100%">
-</p>
+Builds for Windows, macOS and Linux are on the [Releases](../../releases) page: the launcher (`launcher@...`)
+and the game (`nightly`). Install the launcher, and it downloads this version of the game.
 
-<p align="center">
-  <sub>Against Java Edition with Sodium, Lithium, FerriteCore and ImmediatelyFast on a Ryzen 7 9800X3D with an RTX 5080. More computers on the <a href="https://playhorizon.dev/benchmarks">benchmarks page</a>.</sub>
-</p>
+## Good to know
 
-<h2 align="center">What you get</h2>
+- Tailcat's helper (`mclink-helper`) comes with the game and starts by itself. It is a small Go program
+  from Tailscale's prototype; **this is not an official Tailscale product**.
+- To find a route between you and your friends it contacts Tailscale's relay servers (DERP). Nothing else of
+  yours is sent.
+- You need your own copy of Minecraft: Java Edition. No Mojang file is included in this repository or in the
+  builds.
+- Not affiliated with Mojang, Microsoft, Tailscale or the original Horizon team.
 
-- **Vanilla Minecraft:** survival, creative and hardcore in every dimension, with the same terrain, mobs, villagers and redstone. Your saves open as they are.
-- **Multiplayer:** vanilla and Horizon servers, LAN, and invite codes for playing your world with friends. You can [host a server](https://playhorizon.dev/docs/hosting) too.
-- **Mods:** Horizon's own mod system, with mods like zoom and a minimap, and shader packs. Browse the [catalogue](https://playhorizon.dev/mods) or [make a mod](https://playhorizon.dev/docs/make-a-mod).
-- **Beyond vanilla:** terrain up to 1,024 chunks away, HDR, controller support, graphics presets and dynamic lights.
+Based on [Horizon-free](https://github.com/0CYBER/horizon-free), itself a fork of
+[Horizon](https://github.com/horizon-rust/horizon). The README of Horizon-free, with its notes, is
+[README.horizon-free.md](README.horizon-free.md). How the Tailcat part works:
+[docs/play-with-friends.md](docs/play-with-friends.md#tailcat-optional).
 
-<h2 align="center">What you need</h2>
+**Licenses.** Horizon's own work is under the [GNU LGPL v3 or later](LICENSE); code merged before that move
+stays available under the [MIT licence](LICENSES/MIT.txt). The Tailcat helper in `tailcat-helper/` is
+BSD-3-Clause (Tailscale Inc & contributors). See the [notices](THIRD_PARTY_NOTICES.md).
 
-- **Your own copy of Minecraft: Java Edition.** Horizon ships no Minecraft files. It builds them from the game you bought, so install version 26.3 and start it once.
-- **Windows, macOS or Linux:** Windows on x64 or ARM64, macOS 12 or later, Linux on x86-64.
+---
 
-<h2 align="center">Made by the Horizon Team</h2>
+# Horizon + Tailcat (français)
 
-<table align="center">
-  <tr>
-    <td align="center" width="140"><a href="https://github.com/kacpherek"><img src="https://github.com/kacpherek.png?size=160" width="80" alt="Kacper"><br><b>Kacper</b></a></td>
-    <td align="center" width="140"><a href="https://github.com/Online5277"><img src="https://github.com/Online5277.png?size=160" width="80" alt="Cosmic"><br><b>Cosmic</b></a></td>
-    <td align="center" width="140"><a href="https://github.com/levzzz5154"><img src="https://github.com/levzzz5154.png?size=160" width="80" alt="levzzz"><br><b>levzzz</b></a></td>
-    <td align="center" width="140"><a href="https://github.com/rdbtCVS"><img src="https://github.com/rdbtCVS.png?size=160" width="80" alt="rdbt"><br><b>rdbt</b></a></td>
-    <td align="center" width="140"><a href="https://github.com/dezer-x"><img src="https://github.com/dezer-x.png?size=160" width="80" alt="Anthony S"><br><b>Anthony S</b></a></td>
-    <td align="center" width="140"><a href="https://github.com/ludovic111"><img src="https://github.com/ludovic111.png?size=160" width="80" alt="Ludovic Marie"><br><b>Ludovic Marie</b></a><br><sub>Founder</sub></td>
-  </tr>
-</table>
+**Horizon avec Tailcat for Minecraft intégré.**
 
-<p align="center">
-  <sub>and everyone who has contributed</sub><br><br>
-  <a href="https://github.com/horizon-rust/horizon/graphs/contributors"><img src="https://contrib.rocks/image?repo=horizon-rust/horizon&max=72&columns=12" alt="Everyone who has contributed to Horizon"></a>
-</p>
+Ce fork de [Horizon](https://github.com/horizon-rust/horizon) (Minecraft Java 26.3 réécrit en Rust) ajoute
+[Tailcat for Minecraft](https://github.com/tailscale/tailcat-for-minecraft) : partage ton monde avec tes amis
+par un tunnel WireGuard chiffré, sans ouvrir de port sur ta box et sans installer de VPN.
 
-<p align="center">
-  <a href="docs/native-client.md#run-from-a-checkout"><b>Build guide</b></a> ·
-  <a href="CONTRIBUTING.md"><b>Contributing</b></a> ·
-  <a href="GOVERNANCE.md"><b>Governance</b></a> ·
-  <a href="https://github.com/sponsors/ludovic111"><b>Sponsor</b></a>
-</p>
+**Pour jouer avec des amis :** ouvre un monde, Échap, icône **Play with Friends**, puis **Share with
+Tailcat**. Copie l'invitation `mcl1_...` et envoie-la. Tes amis la collent dans **Connexion directe** ou
+**Join a Friend**. Il leur faut cette version de Horizon, et leur propre copie de Minecraft Java.
 
-<sub>Horizon is released under the [GNU LGPL, version 3 or later](LICENSE), for the project's original work. Code merged before the move from MIT stays available under the [MIT licence](LICENSES/MIT.txt). Dependencies keep their own licences, see the [notices](THIRD_PARTY_NOTICES.md). Founded by [Ludovic Marie](https://lu4ovic.com) and built by the Horizon Team and [its contributors](https://github.com/horizon-rust/horizon/graphs/contributors). You can support it on [GitHub Sponsors](https://github.com/sponsors/ludovic111).</sub>
-
-<sub>NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT. Minecraft is a trademark of Mojang Synergies AB; its code and assets belong to Mojang and Microsoft under the [Minecraft EULA](https://www.minecraft.net/en-us/eula).</sub>
+Les versions Windows, macOS et Linux sont dans [Releases](../../releases). Projet non officiel, sans lien
+avec Mojang, Microsoft, Tailscale ni l'équipe d'origine de Horizon.

@@ -1,0 +1,4 @@
+# Horizon + Tailcat (Lumosity23/horizon-free): the public key its game and launcher releases are signed with,
+# one base64 Ed25519 key per line. Trusted for that repository only (`repository_keys`), never for
+# horizon-rust/horizon. The private key is the RELEASE_SIGNING_KEY secret of the fork's Actions.
+IWSf9Juard20wIIyqTgBtUsArfhPTfRlwUMzf8xUi0Y=

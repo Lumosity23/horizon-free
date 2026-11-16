@@ -71,6 +71,30 @@ anything is dialled:
 A code lives as long as the host shares: stopping, closing the world or quitting ends it (the direct
 port closes, the router mapping is deleted). Sharing again makes a new secret.
 
+## Tailcat (optional)
+
+A second way to share the same LAN world, for hosts whose router won't open a port and who have no relay
+to run. [Tailcat](https://github.com/tailscale/tailcat) carries the game over userspace WireGuard with NAT
+traversal and Tailscale's DERP relays, with no Tailscale installation and no TUN device. It is Go, so it is a
+helper process (`mclink-helper`, from
+[tailscale/tailcat-for-minecraft](https://github.com/tailscale/tailcat-for-minecraft)'s `helper/`), not part of
+the game: `crates/horizon-friends/src/tailcat.rs` starts it and reads its lines of JSON.
+
+- **Hosting.** Play with Friends' **Share with Tailcat** (or `horizon-ctl friends tailcat`) opens the world to
+  LAN as Start Sharing does and runs `mclink-helper host --target 127.0.0.1:<LAN port>`. Its `ready` event
+  carries an `mcl1_...` invitation, shown and copied like an invite code. Stopping sharing, closing the world
+  or quitting ends the helper (closing its input is the order to stop).
+- **Joining.** An `mcl1_...` invitation is accepted wherever an invite code is (Direct Connection, Join a
+  Friend, `friend:mcl1_...`): the resolver runs `mclink-helper join --invite ...` and connects the client to the
+  loopback port it answers with. That port takes no token (the helper's, not this crate's).
+- **Where the helper is.** `HORIZON_TAILCAT_HELPER` names it, else `mclink-helper` beside the game's
+  executable, else `tailcat/mclink-helper` in the game folder. Without it, sharing and joining say so.
+  Build it with `go build -tags=ts_omit_ssh ./cmd/mclink-helper` in the helper's `helper/` folder.
+- **Privacy.** The helper contacts Tailscale's DERP servers to find a route, and Tailcat's own invitation
+  holds the host's WireGuard public key and DERP region. Horizon's own codes, STUN and port mapping are not
+  used for a Tailcat world. The game shows a Tailcat world as "Friend's world" and gives mods only a hash of
+  the invitation.
+
 ## When friends can't reach the host
 
 Play with Friends says what to expect, from what the game found; when friends on the internet can't

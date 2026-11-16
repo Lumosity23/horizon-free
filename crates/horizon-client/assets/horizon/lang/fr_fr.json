@@ -1052,5 +1052,10 @@
   "horizon.options.impulse_triggers": "Gâchettes à impulsion",
   "A tick when you break a block, as in Bedrock.": "Quand vous cassez un bloc, il vibre, comme dans Bedrock.",
   "A short buzz when you split a stack, as in Bedrock.": "Une courte vibration quand vous partagez un tas, comme dans Bedrock.",
-  "An Xbox One controller's triggers buzz with its handles.": "Les gâchettes d'une manette Xbox One vibrent avec ses poignées."
+  "An Xbox One controller's triggers buzz with its handles.": "Les gâchettes d'une manette Xbox One vibrent avec ses poignées.",
+  "horizon.multiplayer.connected_friend_tailcat": "Connecté à votre ami via Tailcat...",
+  "horizon.friends.share_tailcat": "Partager avec Tailcat",
+  "horizon.friends.tailcat_finding": "Recherche d'une route via Tailcat...",
+  "horizon.friends.tailcat_ready": "Vos amis rejoignent avec cette invitation via Tailcat. Ça passe les routeurs et les pare-feu, sans port à ouvrir.",
+  "horizon.friends.tailcat_failed": "Tailcat s'est arrêté : %s"
 }

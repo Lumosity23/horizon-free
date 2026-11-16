@@ -20,6 +20,7 @@ pub mod portmap;
 pub mod reach;
 mod session;
 pub mod stun;
+pub mod tailcat;
 pub mod wire;
 
 pub use code::Code;
@@ -38,6 +39,12 @@ use std::{
 /// (`horizon-client --server friend:…`, what the launcher's Join a friend
 /// starts).
 pub const ADDRESS_PREFIX: &str = "friend:";
+
+/// Whether Join a Friend can join `code`: an invite code, or a Tailcat invitation (`tailcat`).
+/// The launcher's Play page checks what the player pasted with it before starting the game.
+pub fn can_join(code: &str) -> bool {
+    invite::parse(code).is_some() || tailcat::is_invite(code)
+}
 
 /// Fill `buf` from the OS random generator.
 pub(crate) fn fill_random(buf: &mut [u8]) -> io::Result<()> {

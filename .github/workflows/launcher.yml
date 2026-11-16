@@ -274,7 +274,7 @@ jobs:
             echo "- Offline play enabled by default, in the window and the CLI: no Microsoft account that owns the game is required to launch."
             echo "- No Microsoft sign-in plates in the interface."
             echo "- Horizon-Free button in the sidebar, above the Discord button."
-            echo "- Launcher self-updates from 0CYBER/horizon-free (tags launcher@X.Y.Z)."
+            echo "- Launcher self-updates from Lumosity23/horizon-free (tags launcher@X.Y.Z), and installs the game from the same repository (its signed nightly release: Horizon with Tailcat for Minecraft built in)."
             echo "- The partner/sponsor plate (Sculk) is off by default; it no longer appears in the sidebar or on the Servers page."
             echo "- Settings > Game has the game folder again (saves, options.txt and packs), with Open, Change and Use the default, and the Minecraft folder beside it: Play's folder menu picks the same one."
             echo "- Skins work for the game's own offline name too: pick one with the pencil on its chip in Settings > Account, or with Skin: on the top bar's name list. Offline names keep their own skins and capes, and a new name keeps the look."
