@@ -19,8 +19,11 @@ src = Path(sys.argv[1]).resolve()
 if not (src / "Cargo.toml").is_file():
     sys.exit(f"{src}: not a Horizon source tree (no Cargo.toml)")
 
-# `git apply` works outside a repository too, and exists on every runner.
-subprocess.run(["git", "apply", "--whitespace=nowarn", "--verbose", str(here / "game.patch")], cwd=src, check=True)
+# `git apply` works outside a repository too, and exists on every runner. The patch goes in on the
+# standard input with LF line ends whatever the checkout did to the file (Windows' autocrlf turns it
+# into CRLF, and a CRLF patch matches none of the source's LF lines).
+patch = (here / "game.patch").read_bytes().replace(b"\r\n", b"\n")
+subprocess.run(["git", "apply", "--whitespace=nowarn", "--verbose", "-"], input=patch, cwd=src, check=True)
 
 keys = json.loads((here / "lang-keys.json").read_text(encoding="utf-8"))
 for lang, entries in keys.items():

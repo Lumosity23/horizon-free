@@ -1,0 +1,2 @@
+# Checked out byte for byte: a patch and the files it adds must keep their LF line ends on Windows too.
+* -text
